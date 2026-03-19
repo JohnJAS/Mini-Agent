@@ -13,6 +13,7 @@ from .logger import AgentLogger
 from .schema import Message
 from .tools.base import Tool, ToolResult
 from .utils import calculate_display_width
+from .utils.memory_profiler import AgentLoopMemoryTracker
 
 
 # Cache tiktoken encoder to avoid repeated initialization (memory optimization)
@@ -67,15 +68,16 @@ class Agent:
         tools: list[Tool],
         max_steps: int = 50,
         workspace_dir: str = "./workspace",
-        token_limit: int = 80000,  # Summary triggered when tokens exceed this value
+        token_limit: int = 80000,
+        memory_tracker: Optional[AgentLoopMemoryTracker] = None,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
         self.token_limit = token_limit
         self.workspace_dir = Path(workspace_dir)
-        # Cancellation event for interrupting agent execution (set externally, e.g., by Esc key)
         self.cancel_event: Optional[asyncio.Event] = None
+        self.memory_tracker = memory_tracker
 
         # Ensure workspace exists
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -133,7 +135,9 @@ class Agent:
         removed_count = len(self.messages) - last_assistant_idx
         if removed_count > 0:
             self.messages = self.messages[:last_assistant_idx]
-            print(f"{Colors.DIM}   Cleaned up {removed_count} incomplete message(s){Colors.RESET}")
+            print(
+                f"{Colors.DIM}   Cleaned up {removed_count} incomplete message(s){Colors.RESET}"
+            )
 
     def _estimate_tokens(self) -> int:
         """Accurately calculate token count for message history using tiktoken
@@ -212,7 +216,10 @@ class Agent:
         estimated_tokens = self._estimate_tokens()
 
         # Check both local estimation and API reported tokens
-        should_summarize = estimated_tokens > self.token_limit or self.api_total_tokens > self.token_limit
+        should_summarize = (
+            estimated_tokens > self.token_limit
+            or self.api_total_tokens > self.token_limit
+        )
 
         # If neither exceeded, no summary needed
         if not should_summarize:
@@ -221,14 +228,20 @@ class Agent:
         print(
             f"\n{Colors.BRIGHT_YELLOW}📊 Token usage - Local estimate: {estimated_tokens}, API reported: {self.api_total_tokens}, Limit: {self.token_limit}{Colors.RESET}"
         )
-        print(f"{Colors.BRIGHT_YELLOW}🔄 Triggering message history summarization...{Colors.RESET}")
+        print(
+            f"{Colors.BRIGHT_YELLOW}🔄 Triggering message history summarization...{Colors.RESET}"
+        )
 
         # Find all user message indices (skip system prompt)
-        user_indices = [i for i, msg in enumerate(self.messages) if msg.role == "user" and i > 0]
+        user_indices = [
+            i for i, msg in enumerate(self.messages) if msg.role == "user" and i > 0
+        ]
 
         # Need at least 1 user message to perform summary
         if len(user_indices) < 1:
-            print(f"{Colors.BRIGHT_YELLOW}⚠️  Insufficient messages, cannot summarize{Colors.RESET}")
+            print(
+                f"{Colors.BRIGHT_YELLOW}⚠️  Insufficient messages, cannot summarize{Colors.RESET}"
+            )
             return
 
         # Build new message list
@@ -269,9 +282,15 @@ class Agent:
         self._skip_next_token_check = True
 
         new_tokens = self._estimate_tokens()
-        print(f"{Colors.BRIGHT_GREEN}✓ Summary completed, local tokens: {estimated_tokens} → {new_tokens}{Colors.RESET}")
-        print(f"{Colors.DIM}  Structure: system + {len(user_indices)} user messages + {summary_count} summaries{Colors.RESET}")
-        print(f"{Colors.DIM}  Note: API token count will update on next LLM call{Colors.RESET}")
+        print(
+            f"{Colors.BRIGHT_GREEN}✓ Summary completed, local tokens: {estimated_tokens} → {new_tokens}{Colors.RESET}"
+        )
+        print(
+            f"{Colors.DIM}  Structure: system + {len(user_indices)} user messages + {summary_count} summaries{Colors.RESET}"
+        )
+        print(
+            f"{Colors.DIM}  Note: API token count will update on next LLM call{Colors.RESET}"
+        )
 
     async def _create_summary(self, messages: list[Message], round_num: int) -> str:
         """Create summary for one execution round
@@ -290,13 +309,17 @@ class Agent:
         summary_content = f"Round {round_num} execution process:\n\n"
         for msg in messages:
             if msg.role == "assistant":
-                content_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+                content_text = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
                 summary_content += f"Assistant: {content_text}\n"
                 if msg.tool_calls:
                     tool_names = [tc.function.name for tc in msg.tool_calls]
                     summary_content += f"  → Called tools: {', '.join(tool_names)}\n"
             elif msg.role == "tool":
-                result_preview = msg.content if isinstance(msg.content, str) else str(msg.content)
+                result_preview = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
                 summary_content += f"  ← Tool returned: {result_preview}...\n"
 
         # Call LLM to generate concise summary
@@ -324,11 +347,15 @@ Requirements:
             )
 
             summary_text = response.content
-            print(f"{Colors.BRIGHT_GREEN}✓ Summary for round {round_num} generated successfully{Colors.RESET}")
+            print(
+                f"{Colors.BRIGHT_GREEN}✓ Summary for round {round_num} generated successfully{Colors.RESET}"
+            )
             return summary_text
 
         except Exception as e:
-            print(f"{Colors.BRIGHT_RED}✗ Summary generation failed for round {round_num}: {e}{Colors.RESET}")
+            print(
+                f"{Colors.BRIGHT_RED}✗ Summary generation failed for round {round_num}: {e}{Colors.RESET}"
+            )
             # Use simple text summary on failure
             return summary_content
 
@@ -343,28 +370,40 @@ Requirements:
         Returns:
             The final response content, or error message (including cancellation message).
         """
-        # Set cancellation event (can also be set via self.cancel_event before calling run())
         if cancel_event is not None:
             self.cancel_event = cancel_event
 
-        # Start new run, initialize log file
         self.logger.start_new_run()
-        print(f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}")
+        print(
+            f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}"
+        )
+
+        if self.memory_tracker:
+            self.memory_tracker.start_loop()
 
         step = 0
         run_start_time = perf_counter()
 
         while step < self.max_steps:
-            # Check for cancellation at start of each step
             if self._check_cancelled():
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                if self.memory_tracker:
+                    self.memory_tracker.end_loop()
+                    self.memory_tracker.print_report()
                 return cancel_msg
 
             step_start_time = perf_counter()
-            # Check and summarize message history to prevent context overflow
+
+            if self.memory_tracker:
+                self.memory_tracker.record_step_start(step)
+                self.memory_tracker.record_summarize_before(step)
+
             await self._summarize_messages()
+
+            if self.memory_tracker:
+                self.memory_tracker.record_summarize_after(step)
 
             # Step header with proper width calculation
             BOX_WIDTH = 58
@@ -373,28 +412,41 @@ Requirements:
             padding = max(0, BOX_WIDTH - 1 - step_display_width)  # -1 for leading space
 
             print(f"\n{Colors.DIM}╭{'─' * BOX_WIDTH}╮{Colors.RESET}")
-            print(f"{Colors.DIM}│{Colors.RESET} {step_text}{' ' * padding}{Colors.DIM}│{Colors.RESET}")
+            print(
+                f"{Colors.DIM}│{Colors.RESET} {step_text}{' ' * padding}{Colors.DIM}│{Colors.RESET}"
+            )
             print(f"{Colors.DIM}╰{'─' * BOX_WIDTH}╯{Colors.RESET}")
 
             # Get tool list for LLM call
             tool_list = list(self.tools.values())
 
-            # Log LLM request and call LLM with Tool objects directly
             self.logger.log_request(messages=self.messages, tools=tool_list)
 
+            if self.memory_tracker:
+                self.memory_tracker.record_llm_before(step)
+
             try:
-                response = await self.llm.generate(messages=self.messages, tools=tool_list)
+                response = await self.llm.generate(
+                    messages=self.messages, tools=tool_list
+                )
             except Exception as e:
-                # Check if it's a retry exhausted error
                 from .retry import RetryExhaustedError
 
                 if isinstance(e, RetryExhaustedError):
                     error_msg = f"LLM call failed after {e.attempts} retries\nLast error: {str(e.last_exception)}"
-                    print(f"\n{Colors.BRIGHT_RED}❌ Retry failed:{Colors.RESET} {error_msg}")
+                    print(
+                        f"\n{Colors.BRIGHT_RED}❌ Retry failed:{Colors.RESET} {error_msg}"
+                    )
                 else:
                     error_msg = f"LLM call failed: {str(e)}"
                     print(f"\n{Colors.BRIGHT_RED}❌ Error:{Colors.RESET} {error_msg}")
+                if self.memory_tracker:
+                    self.memory_tracker.end_loop()
+                    self.memory_tracker.print_report()
                 return error_msg
+
+            if self.memory_tracker:
+                self.memory_tracker.record_llm_after(step)
 
             # Accumulate API reported token usage
             if response.usage:
@@ -427,32 +479,41 @@ Requirements:
                 print(f"\n{Colors.BOLD}{Colors.BRIGHT_BLUE}🤖 Assistant:{Colors.RESET}")
                 print(f"{response.content}")
 
-            # Check if task is complete (no tool calls)
             if not response.tool_calls:
                 step_elapsed = perf_counter() - step_start_time
                 total_elapsed = perf_counter() - run_start_time
-                print(f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}")
+                print(
+                    f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}"
+                )
+                if self.memory_tracker:
+                    self.memory_tracker.record_step_end(step)
+                    self.memory_tracker.end_loop()
+                    self.memory_tracker.print_report()
+                    self.memory_tracker.save_report(
+                        str(self.workspace_dir / "memory_report.json")
+                    )
                 return response.content
 
-            # Check for cancellation before executing tools
             if self._check_cancelled():
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                if self.memory_tracker:
+                    self.memory_tracker.record_step_end(step)
+                    self.memory_tracker.end_loop()
+                    self.memory_tracker.print_report()
                 return cancel_msg
 
-            # Execute tool calls
             for tool_call in response.tool_calls:
                 tool_call_id = tool_call.id
                 function_name = tool_call.function.name
                 arguments = tool_call.function.arguments
 
-                # Tool call header
-                print(f"\n{Colors.BRIGHT_YELLOW}🔧 Tool Call:{Colors.RESET} {Colors.BOLD}{Colors.CYAN}{function_name}{Colors.RESET}")
+                print(
+                    f"\n{Colors.BRIGHT_YELLOW}🔧 Tool Call:{Colors.RESET} {Colors.BOLD}{Colors.CYAN}{function_name}{Colors.RESET}"
+                )
 
-                # Arguments (formatted display)
                 print(f"{Colors.DIM}   Arguments:{Colors.RESET}")
-                # Truncate each argument value to avoid overly long output
                 truncated_args = {}
                 for key, value in arguments.items():
                     value_str = str(value)
@@ -464,7 +525,9 @@ Requirements:
                 for line in args_json.split("\n"):
                     print(f"   {Colors.DIM}{line}{Colors.RESET}")
 
-                # Execute tool
+                if self.memory_tracker:
+                    self.memory_tracker.record_tool_before(step, function_name)
+
                 if function_name not in self.tools:
                     result = ToolResult(
                         success=False,
@@ -476,7 +539,6 @@ Requirements:
                         tool = self.tools[function_name]
                         result = await tool.execute(**arguments)
                     except Exception as e:
-                        # Catch all exceptions during tool execution, convert to failed ToolResult
                         import traceback
 
                         error_detail = f"{type(e).__name__}: {str(e)}"
@@ -486,6 +548,9 @@ Requirements:
                             content="",
                             error=f"Tool execution failed: {error_detail}\n\nTraceback:\n{error_trace}",
                         )
+
+                if self.memory_tracker:
+                    self.memory_tracker.record_tool_after(step, function_name)
 
                 # Log tool execution result
                 self.logger.log_tool_result(
@@ -500,36 +565,52 @@ Requirements:
                 if result.success:
                     result_text = result.content
                     if len(result_text) > 300:
-                        result_text = result_text[:300] + f"{Colors.DIM}...{Colors.RESET}"
+                        result_text = (
+                            result_text[:300] + f"{Colors.DIM}...{Colors.RESET}"
+                        )
                     print(f"{Colors.BRIGHT_GREEN}✓ Result:{Colors.RESET} {result_text}")
                 else:
-                    print(f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{result.error}{Colors.RESET}")
+                    print(
+                        f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{result.error}{Colors.RESET}"
+                    )
 
                 # Add tool result message
                 tool_msg = Message(
                     role="tool",
-                    content=result.content if result.success else f"Error: {result.error}",
+                    content=result.content
+                    if result.success
+                    else f"Error: {result.error}",
                     tool_call_id=tool_call_id,
                     name=function_name,
                 )
                 self.messages.append(tool_msg)
 
-                # Check for cancellation after each tool execution
                 if self._check_cancelled():
                     self._cleanup_incomplete_messages()
                     cancel_msg = "Task cancelled by user."
                     print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                    if self.memory_tracker:
+                        self.memory_tracker.record_step_end(step)
+                        self.memory_tracker.end_loop()
+                        self.memory_tracker.print_report()
                     return cancel_msg
 
             step_elapsed = perf_counter() - step_start_time
             total_elapsed = perf_counter() - run_start_time
-            print(f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}")
+            print(
+                f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}"
+            )
+
+            if self.memory_tracker:
+                self.memory_tracker.record_step_end(step)
 
             step += 1
 
-        # Max steps reached
         error_msg = f"Task couldn't be completed after {self.max_steps} steps."
         print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {error_msg}{Colors.RESET}")
+        if self.memory_tracker:
+            self.memory_tracker.end_loop()
+            self.memory_tracker.print_report()
         return error_msg
 
     def get_history(self) -> list[Message]:

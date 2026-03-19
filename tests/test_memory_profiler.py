@@ -4,14 +4,20 @@ import gc
 import sys
 import threading
 import time
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mini_agent.utils.memory_profiler import (
+    AgentLoopMemoryTracker,
+    LoopMemoryReport,
+    LoopPhase,
     MemoryProfiler,
     MemorySnapshot,
+    PhaseMemoryRecord,
     ResourceTracker,
+    StepMemorySummary,
     get_resource_tracker,
     profile_agent_memory,
 )
@@ -23,7 +29,7 @@ class TestMemorySnapshot:
     def test_create_snapshot(self):
         """Test creating a memory snapshot."""
         snapshot = MemorySnapshot(
-            timestamp=time.time(),
+            timestamp=datetime.now(),
             rss_mb=100.0,
             vms_mb=200.0,
             python_objects=10000,
@@ -184,7 +190,10 @@ class TestResourceTracker:
         tracker.register("old_type", "old_id")
         # Manually set old timestamp
         import datetime
-        tracker._resources["old_type"]["old_id"]["registered_at"] = datetime.datetime.now() - datetime.timedelta(hours=2)
+
+        tracker._resources["old_type"]["old_id"]["registered_at"] = (
+            datetime.datetime.now() - datetime.timedelta(hours=2)
+        )
 
         # Register a new resource
         tracker.register("new_type", "new_id")
@@ -255,6 +264,147 @@ class TestIntegration:
 
         # Force GC
         profiler.force_gc()
+
+
+class TestAgentLoopMemoryTracker:
+    """Tests for AgentLoopMemoryTracker class."""
+
+    def test_start_and_end_loop(self):
+        """Test starting and ending a loop."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.end_loop()
+
+        assert len(tracker._records) == 2
+        assert tracker._records[0].phase == LoopPhase.RUN_START
+        assert tracker._records[1].phase == LoopPhase.RUN_END
+
+    def test_record_step(self):
+        """Test recording a step."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        assert len(tracker._records) == 4
+        step_start = tracker._find_record(LoopPhase.STEP_START, 0)
+        step_end = tracker._find_record(LoopPhase.STEP_END, 0)
+        assert step_start is not None
+        assert step_end is not None
+
+    def test_record_llm_call(self):
+        """Test recording LLM calls."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_llm_before(0)
+        tracker.record_llm_after(0)
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        llm_before = tracker._find_record(LoopPhase.LLM_BEFORE, 0)
+        llm_after = tracker._find_record(LoopPhase.LLM_AFTER, 0)
+        assert llm_before is not None
+        assert llm_after is not None
+
+    def test_record_tool_call(self):
+        """Test recording tool calls."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_tool_before(0, "bash")
+        tracker.record_tool_after(0, "bash")
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        tool_before = tracker._find_record(LoopPhase.TOOL_BEFORE, 0, "bash")
+        tool_after = tracker._find_record(LoopPhase.TOOL_AFTER, 0, "bash")
+        assert tool_before is not None
+        assert tool_after is not None
+        assert tool_before.detail == "bash"
+
+    def test_generate_report(self):
+        """Test generating a report."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_llm_before(0)
+        tracker.record_llm_after(0)
+        tracker.record_tool_before(0, "bash")
+        tracker.record_tool_after(0, "bash")
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        report = tracker.generate_report()
+        assert isinstance(report, LoopMemoryReport)
+        assert report.total_duration_seconds >= 0
+        assert len(report.steps) == 1
+        assert report.steps[0].tool_calls == ["bash"]
+
+    def test_print_report(self, capsys):
+        """Test printing a report."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        tracker.print_report()
+        captured = capsys.readouterr()
+        assert "AGENT LOOP MEMORY REPORT" in captured.out
+        assert "STEP-BY-STEP BREAKDOWN" in captured.out
+
+    def test_save_report(self, tmp_path):
+        """Test saving a report to JSON."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+        tracker.record_step_start(0)
+        tracker.record_step_end(0)
+        tracker.end_loop()
+
+        filepath = str(tmp_path / "test_report.json")
+        tracker.save_report(filepath)
+
+        import json
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        assert "start_time" in data
+        assert "steps" in data
+        assert len(data["steps"]) == 1
+
+    def test_multiple_steps(self):
+        """Test tracking multiple steps."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+
+        for step in range(3):
+            tracker.record_step_start(step)
+            tracker.record_llm_before(step)
+            tracker.record_llm_after(step)
+            tracker.record_step_end(step)
+
+        tracker.end_loop()
+
+        report = tracker.generate_report()
+        assert len(report.steps) == 3
+
+    def test_potential_leak_detection(self):
+        """Test potential leak detection."""
+        tracker = AgentLoopMemoryTracker(enable_tracemalloc=False)
+        tracker.start_loop()
+
+        for step in range(5):
+            tracker.record_step_start(step)
+            tracker.record_step_end(step)
+
+        tracker.end_loop()
+
+        report = tracker.generate_report()
+        assert isinstance(report.potential_leaks, list)
+        assert isinstance(report.recommendations, list)
 
 
 if __name__ == "__main__":

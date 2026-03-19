@@ -6,11 +6,67 @@ to detect and diagnose memory leaks in Mini-Agent applications.
 """
 
 import asyncio
+from pathlib import Path
 
 from mini_agent import LLMClient
 from mini_agent.agent import Agent
 from mini_agent.tools.bash_tool import BashTool, BackgroundShellManager
 from mini_agent.tools.mcp_loader import get_mcp_connections_stats
+
+
+async def agent_loop_memory_tracking():
+    """Demonstrate fine-grained memory tracking for an agent loop."""
+    from mini_agent.utils.memory_profiler import AgentLoopMemoryTracker
+
+    tracker = AgentLoopMemoryTracker(enable_tracemalloc=True)
+
+    llm_client = LLMClient(
+        api_key="your-api-key",
+        model="MiniMax-M2.5",
+    )
+
+    agent = Agent(
+        llm_client=llm_client,
+        system_prompt="You are a helpful assistant.",
+        tools=[BashTool()],
+        memory_tracker=tracker,
+    )
+
+    agent.add_user_message("List files in current directory")
+
+    result = await agent.run()
+    print(f"\nAgent result: result...")
+
+
+async def manual_memory_tracking():
+    """Demonstrate manual memory tracking for custom workflows."""
+    from mini_agent.utils.memory_profiler import AgentLoopMemoryTracker
+
+    tracker = AgentLoopMemoryTracker(enable_tracemalloc=True)
+
+    tracker.start_loop()
+
+    for step in range(3):
+        tracker.record_step_start(step)
+
+        tracker.record_llm_before(step)
+        await asyncio.sleep(0.1)
+        tracker.record_llm_after(step)
+
+        tracker.record_tool_before(step, "bash")
+        await asyncio.sleep(0.05)
+        tracker.record_tool_after(step, "bash")
+
+        tracker.record_step_end(step)
+
+    tracker.end_loop()
+
+    report = tracker.generate_report()
+    tracker.print_report(report)
+
+    output_path = Path("./workspace/memory_report.json")
+    tracker.save_report(str(output_path), report)
+    print(f"\nReport saved to: {output_path}")
 
 
 async def memory_profiling_example():
@@ -53,13 +109,18 @@ async def memory_profiling_example():
     # Simulate some work
     print("\nSimulating agent activity...")
     for i in range(5):
-        agent.add_user_message(f"Task {i + 1}: This is a test message with some content.")
+        agent.add_user_message(
+            f"Task {i + 1}: This is a test message with some content."
+        )
         # Simulate assistant response
         from mini_agent.schema import Message
-        agent.messages.append(Message(
-            role="assistant",
-            content="This is a simulated response that could be quite long..."
-        ))
+
+        agent.messages.append(
+            Message(
+                role="assistant",
+                content="This is a simulated response that could be quite long...",
+            )
+        )
 
     # Profile the agent
     print("\nProfiling agent memory...")
@@ -68,9 +129,9 @@ async def memory_profiling_example():
     print(f"Total message size: {profile['total_message_size'] / 1024:.2f} KB")
     print(f"Average message size: {profile['avg_message_size']:.2f} bytes")
 
-    if profile['potential_issues']:
+    if profile["potential_issues"]:
         print("\nPotential issues detected:")
-        for issue in profile['potential_issues']:
+        for issue in profile["potential_issues"]:
             print(f"  - {issue}")
 
     # Get resource tracker stats
@@ -123,18 +184,22 @@ def demo_mcp_memory():
     stats = get_mcp_connections_stats()
     print(f"Total connections: {stats['total_connections']}")
 
-    for conn in stats['connections']:
-        print(f"  - {conn['name']}: {conn['tools_count']} tools, session={conn['has_session']}")
+    for conn in stats["connections"]:
+        print(
+            f"  - {conn['name']}: {conn['tools_count']} tools, session={conn['has_session']}"
+        )
 
 
 if __name__ == "__main__":
     print("Mini-Agent Memory Profiling Demo")
     print("=" * 50)
 
-    # Run the main demo
+    print("\n=== Agent Loop Memory Tracking Demo ===")
+    asyncio.run(manual_memory_tracking())
+
+    print("\n=== Memory Profiling Example ===")
     asyncio.run(memory_profiling_example())
 
-    # Additional demos
     demo_background_shell_memory()
     demo_mcp_memory()
 
