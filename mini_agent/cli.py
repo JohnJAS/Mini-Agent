@@ -34,7 +34,7 @@ from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from mini_agent.tools.file_tools import EditTool, ReadTool, WriteTool
-from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async, set_mcp_timeout_config
+from mini_agent.tools.mcp_loader import cleanup_mcp_connections, get_mcp_connections_stats, load_mcp_tools_async, set_mcp_timeout_config
 from mini_agent.tools.note_tool import SessionNoteTool
 from mini_agent.tools.skill_tool import create_skill_tools
 from mini_agent.utils import calculate_display_width
@@ -196,6 +196,7 @@ def print_help():
   {Colors.BRIGHT_GREEN}/clear{Colors.RESET}     - Clear session history (keep system prompt)
   {Colors.BRIGHT_GREEN}/history{Colors.RESET}   - Show current session message count
   {Colors.BRIGHT_GREEN}/stats{Colors.RESET}     - Show session statistics
+  {Colors.BRIGHT_GREEN}/memory{Colors.RESET}    - Show memory usage analysis
   {Colors.BRIGHT_GREEN}/log{Colors.RESET}       - Show log directory and recent files
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET} - Read a specific log file
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}      - Exit program (also: exit, quit, q)
@@ -280,6 +281,86 @@ def print_stats(agent: Agent, session_start: datetime):
     if agent.api_total_tokens > 0:
         print(f"  API Tokens Used: {Colors.BRIGHT_MAGENTA}{agent.api_total_tokens:,}{Colors.RESET}")
     print(f"{Colors.DIM}{'─' * 40}{Colors.RESET}\n")
+
+
+def print_memory_stats(agent: Agent):
+    """Print memory usage statistics"""
+    import sys
+
+    # Get agent memory stats
+    agent_stats = agent.get_memory_stats()
+
+    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}Memory Usage Analysis:{Colors.RESET}")
+    print(f"{Colors.DIM}{'─' * 50}{Colors.RESET}")
+
+    # Agent stats
+    print(f"\n{Colors.BOLD}Agent Memory:{Colors.RESET}")
+    print(f"  Messages: {agent_stats['message_count']}")
+    print(f"  Content Size: {Colors.BRIGHT_YELLOW}{agent_stats['total_content_mb']:.2f} MB{Colors.RESET}")
+    print(f"  Avg Message: {agent_stats['avg_message_bytes'] / 1024:.1f} KB")
+    print(f"  Max Message: {agent_stats['max_message_bytes'] / 1024:.1f} KB")
+    print(f"  Tools Loaded: {agent_stats['tool_count']}")
+
+    # Background shell stats
+    try:
+        from mini_agent.tools.bash_tool import BackgroundShellManager
+
+        shell_stats = BackgroundShellManager.get_memory_stats()
+        print(f"\n{Colors.BOLD}Background Shells:{Colors.RESET}")
+        print(f"  Total Shells: {shell_stats['total_shells']}")
+        print(f"  Running: {Colors.BRIGHT_GREEN}{shell_stats['running_shells']}{Colors.RESET}")
+        print(f"  Completed: {Colors.DIM}{shell_stats['completed_shells']}{Colors.RESET}")
+        print(f"  Total Output Lines: {shell_stats['total_output_lines']}")
+    except Exception:
+        pass
+
+    # MCP connection stats
+    try:
+        mcp_stats = get_mcp_connections_stats()
+        print(f"\n{Colors.BOLD}MCP Connections:{Colors.RESET}")
+        print(f"  Total Connections: {mcp_stats['total_connections']}")
+        for conn in mcp_stats['connections']:
+            status = Colors.BRIGHT_GREEN + "active" if conn['has_session'] else Colors.RED + "inactive"
+            print(f"    - {conn['name']}: {conn['tools_count']} tools ({status}{Colors.RESET})")
+    except Exception:
+        pass
+
+    # Python process memory
+    try:
+        import os
+
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        mem = process.memory_info()
+        print(f"\n{Colors.BOLD}Process Memory:{Colors.RESET}")
+        print(f"  RSS: {Colors.BRIGHT_RED}{mem.rss / 1024 / 1024:.1f} MB{Colors.RESET}")
+        print(f"  VMS: {mem.vms / 1024 / 1024:.1f} MB")
+    except ImportError:
+        print(f"\n{Colors.DIM}Install 'psutil' for process memory stats{Colors.RESET}")
+
+    # GC stats
+    import gc
+
+    gc.collect()
+    obj_count = len(gc.get_objects())
+    print(f"\n{Colors.BOLD}Python GC:{Colors.RESET}")
+    print(f"  Tracked Objects: {obj_count:,}")
+
+    # Potential issues
+    issues = []
+    if agent_stats['total_content_mb'] > 10:
+        issues.append(f"Message history large ({agent_stats['total_content_mb']:.1f} MB)")
+    if agent_stats['message_count'] > 100:
+        issues.append(f"Many messages ({agent_stats['message_count']})")
+
+    if issues:
+        print(f"\n{Colors.BOLD}{Colors.BRIGHT_YELLOW}⚠️ Potential Issues:{Colors.RESET}")
+        for issue in issues:
+            print(f"  - {issue}")
+        print(f"  {Colors.DIM}Consider using /clear to reset history{Colors.RESET}")
+
+    print(f"\n{Colors.DIM}{'─' * 50}{Colors.RESET}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -632,7 +713,7 @@ async def run_agent(workspace_dir: Path, task: str = None):
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/history", "/stats", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/history", "/stats", "/memory", "/log", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -718,6 +799,10 @@ async def run_agent(workspace_dir: Path, task: str = None):
 
                 elif command == "/stats":
                     print_stats(agent, session_start)
+                    continue
+
+                elif command == "/memory":
+                    print_memory_stats(agent)
                     continue
 
                 elif command == "/log" or command.startswith("/log "):

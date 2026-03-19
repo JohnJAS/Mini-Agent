@@ -8,11 +8,18 @@ import platform
 import re
 import time
 import uuid
+import weakref
 from typing import Any
 
 from pydantic import Field, model_validator
 
 from .base import Tool, ToolResult
+
+# Maximum number of output lines to keep per background shell (memory protection)
+MAX_OUTPUT_LINES = 10000
+
+# Maximum number of completed shells to keep in memory
+MAX_COMPLETED_SHELLS = 50
 
 
 class BashOutputResult(ToolResult):
@@ -65,10 +72,23 @@ class BackgroundShell:
         self.last_read_index = 0
         self.status = "running"
         self.exit_code: int | None = None
+        self._output_truncated = False  # Track if output was truncated
 
     def add_output(self, line: str):
-        """Add new output line."""
+        """Add new output line with memory protection.
+
+        Automatically truncates old output if exceeds MAX_OUTPUT_LINES.
+        """
         self.output_lines.append(line)
+
+        # Memory protection: truncate old output if too large
+        if len(self.output_lines) > MAX_OUTPUT_LINES:
+            # Keep the most recent lines
+            self.output_lines = self.output_lines[-MAX_OUTPUT_LINES:]
+            self._output_truncated = True
+            # Adjust last_read_index to avoid negative values
+            if self.last_read_index > len(self.output_lines):
+                self.last_read_index = len(self.output_lines)
 
     def get_new_output(self, filter_pattern: str | None = None) -> list[str]:
         """Get new output since last check, optionally filtered by regex."""
@@ -106,15 +126,82 @@ class BackgroundShell:
 
 
 class BackgroundShellManager:
-    """Manager for all background shell processes."""
+    """Manager for all background shell processes with automatic cleanup."""
 
     _shells: dict[str, BackgroundShell] = {}
     _monitor_tasks: dict[str, asyncio.Task] = {}
+    _completed_shells: list[str] = []  # Track completed shell IDs for cleanup
 
     @classmethod
     def add(cls, shell: BackgroundShell) -> None:
         """Add a background shell to management."""
         cls._shells[shell.bash_id] = shell
+
+        # Cleanup old completed shells if too many (memory protection)
+        cls._cleanup_old_shells()
+
+    @classmethod
+    def _cleanup_old_shells(cls) -> None:
+        """Remove old completed shells to prevent memory leak."""
+        # Remove completed shells beyond the limit
+        while len(cls._completed_shells) > MAX_COMPLETED_SHELLS:
+            old_id = cls._completed_shells.pop(0)
+            if old_id in cls._shells:
+                shell = cls._shells[old_id]
+                # Ensure process is terminated
+                if shell.process.returncode is None:
+                    try:
+                        shell.process.kill()
+                    except Exception:
+                        pass
+                del cls._shells[old_id]
+
+    @classmethod
+    def get_memory_stats(cls) -> dict[str, Any]:
+        """Get memory statistics for background shells.
+
+        Returns:
+            Dictionary with memory statistics
+        """
+        total_output_lines = sum(len(shell.output_lines) for shell in cls._shells.values())
+        running_count = sum(1 for shell in cls._shells.values() if shell.status == "running")
+        completed_count = sum(1 for shell in cls._shells.values() if shell.status in ("completed", "failed", "terminated"))
+
+        return {
+            "total_shells": len(cls._shells),
+            "running_shells": running_count,
+            "completed_shells": completed_count,
+            "total_output_lines": total_output_lines,
+            "completed_history": len(cls._completed_shells),
+        }
+
+    @classmethod
+    def cleanup_all(cls) -> int:
+        """Force cleanup all shells and monitoring tasks.
+
+        Returns:
+            Number of shells cleaned up
+        """
+        count = 0
+        for bash_id in list(cls._shells.keys()):
+            try:
+                shell = cls._shells[bash_id]
+                if shell.process.returncode is None:
+                    shell.process.kill()
+                count += 1
+            except Exception:
+                pass
+
+        # Cancel all monitor tasks
+        for task in cls._monitor_tasks.values():
+            if not task.done():
+                task.cancel()
+
+        cls._shells.clear()
+        cls._monitor_tasks.clear()
+        cls._completed_shells.clear()
+
+        return count
 
     @classmethod
     def get(cls, bash_id: str) -> BackgroundShell | None:
@@ -210,6 +297,9 @@ class BackgroundShellManager:
         # Clean up monitoring and remove from manager
         cls._cancel_monitor(bash_id)
         cls._remove(bash_id)
+
+        # Track as completed for memory management
+        cls._completed_shells.append(bash_id)
 
         return shell
 

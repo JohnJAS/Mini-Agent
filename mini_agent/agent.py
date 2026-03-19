@@ -15,6 +15,21 @@ from .tools.base import Tool, ToolResult
 from .utils import calculate_display_width
 
 
+# Cache tiktoken encoder to avoid repeated initialization (memory optimization)
+_tiktoken_encoder = None
+
+
+def _get_tiktoken_encoder():
+    """Get cached tiktoken encoder instance."""
+    global _tiktoken_encoder
+    if _tiktoken_encoder is None:
+        try:
+            _tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            pass
+    return _tiktoken_encoder
+
+
 # ANSI color codes
 class Colors:
     """Terminal color definitions"""
@@ -125,10 +140,9 @@ class Agent:
 
         Uses cl100k_base encoder (GPT-4/Claude/M2 compatible)
         """
-        try:
-            # Use cl100k_base encoder (used by GPT-4 and most modern models)
-            encoding = tiktoken.get_encoding("cl100k_base")
-        except Exception:
+        # Use cached encoder (memory optimization)
+        encoding = _get_tiktoken_encoder()
+        if encoding is None:
             # Fallback: if tiktoken initialization fails, use simple estimation
             return self._estimate_tokens_fallback()
 
@@ -521,3 +535,48 @@ Requirements:
     def get_history(self) -> list[Message]:
         """Get message history."""
         return self.messages.copy()
+
+    def get_memory_stats(self) -> dict:
+        """Get memory usage statistics for the agent.
+
+        Returns:
+            Dictionary with memory statistics
+        """
+        import sys
+
+        total_content_size = 0
+        message_sizes = []
+
+        for msg in self.messages:
+            try:
+                content_size = sys.getsizeof(str(msg.content))
+                if msg.thinking:
+                    content_size += sys.getsizeof(msg.thinking)
+                if msg.tool_calls:
+                    content_size += sys.getsizeof(msg.tool_calls)
+                total_content_size += content_size
+                message_sizes.append(content_size)
+            except Exception:
+                pass
+
+        return {
+            "message_count": len(self.messages),
+            "total_content_bytes": total_content_size,
+            "total_content_mb": total_content_size / 1024 / 1024,
+            "avg_message_bytes": total_content_size / max(len(self.messages), 1),
+            "max_message_bytes": max(message_sizes) if message_sizes else 0,
+            "tool_count": len(self.tools),
+            "api_total_tokens": self.api_total_tokens,
+        }
+
+    def clear_history(self, keep_system: bool = True):
+        """Clear message history to free memory.
+
+        Args:
+            keep_system: Whether to keep the system prompt
+        """
+        if keep_system and self.messages and self.messages[0].role == "system":
+            self.messages = [self.messages[0]]
+        else:
+            self.messages = []
+        self.api_total_tokens = 0

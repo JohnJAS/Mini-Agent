@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import weakref
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -430,4 +431,43 @@ async def cleanup_mcp_connections():
     global _mcp_connections
     for connection in _mcp_connections:
         await connection.disconnect()
+    _mcp_connections.clear()
+
+
+def get_mcp_connections_stats() -> dict[str, Any]:
+    """Get statistics about MCP connections for memory monitoring.
+
+    Returns:
+        Dictionary with connection statistics
+    """
+    return {
+        "total_connections": len(_mcp_connections),
+        "connections": [
+            {
+                "name": conn.name,
+                "type": conn.connection_type,
+                "tools_count": len(conn.tools),
+                "has_session": conn.session is not None,
+                "has_exit_stack": conn.exit_stack is not None,
+            }
+            for conn in _mcp_connections
+        ],
+    }
+
+
+async def safe_cleanup_mcp_connections():
+    """Safely clean up MCP connections with error suppression.
+
+    This function is designed to be called during shutdown
+    and handles any exceptions gracefully.
+    """
+    global _mcp_connections
+
+    for connection in _mcp_connections:
+        try:
+            await connection.disconnect()
+        except Exception:
+            # Silently ignore errors during shutdown
+            pass
+
     _mcp_connections.clear()
