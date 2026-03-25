@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from mini_agent.utils.memory_profiler import MemoryProfiler; print\\(''Memory profiler imports OK''\\)\")",
+      "Bash(python -c \"from mini_agent.tools.bash_tool import BackgroundShellManager; print\\(''BashTool imports OK''\\)\")",
+      "Bash(python -c \"from mini_agent.agent import Agent; a = Agent.__init__.__annotations__; print\\(''Agent imports OK''\\)\")",
+      "Bash(python -c \"from mini_agent.tools.mcp_loader import get_mcp_connections_stats; print\\(''MCP loader imports OK''\\)\")",
+      "Bash(python -m pytest tests/test_memory_profiler.py -v --tb=short)",
+      "Bash(uv pip:*)",
+      "Bash(uv run:*)"
+    ]
+  }
+}

@@ -22,11 +22,13 @@ dependencies = [
     "anthropic>=0.39.0",
     "openai>=1.57.4",
     "agent-client-protocol>=0.6.0",
+    "websockets>=12.0",
 ]
 
 [project.scripts]
 mini-agent = "mini_agent.cli:main"
 mini-agent-acp = "mini_agent.acp.server:main"
+mini-agent-server = "mini_agent.server:main"
 
 [project.optional-dependencies]
 dev = [
