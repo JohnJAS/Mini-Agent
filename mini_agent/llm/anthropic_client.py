@@ -135,8 +135,10 @@ class AnthropicClient(LLMClientBase):
                     # Build content blocks for assistant with thinking and/or tool calls
                     content_blocks = []
 
-                    # Add thinking block if present
-                    if msg.thinking:
+                    # Note: thinking block is only supported by native Anthropic API
+                    # Skip thinking for non-Anthropic endpoints (e.g., DashScope)
+                    # to avoid "Request body format invalid" errors
+                    if msg.thinking and "anthropic.com" in self.api_base:
                         content_blocks.append({"type": "thinking", "thinking": msg.thinking})
 
                     # Add text content if present
@@ -155,7 +157,12 @@ class AnthropicClient(LLMClientBase):
                                 }
                             )
 
-                    api_messages.append({"role": "assistant", "content": content_blocks})
+                    # Use simple string format if no content blocks, otherwise use blocks format
+                    if content_blocks:
+                        api_messages.append({"role": "assistant", "content": content_blocks})
+                    else:
+                        # Fallback for empty content (shouldn't happen in normal cases)
+                        api_messages.append({"role": "assistant", "content": msg.content or ""})
                 else:
                     api_messages.append({"role": msg.role, "content": msg.content})
 

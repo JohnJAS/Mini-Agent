@@ -155,7 +155,248 @@ mini-agent-server --verbose
 | `max_turn_requests` | 达到最大步数 |
 | `refusal` | 拒绝执行 |
 
-## 客户端示例
+## Python 客户端库
+
+Mini-Agent 提供了一个易用的 Python 客户端库，无需手动处理 WebSocket 消息。
+
+### 导入
+
+```python
+from mini_agent.server import (
+    MiniAgentClient,
+    AgentResponse,
+    ToolCallInfo,
+    ToolResultInfo,
+    chat,          # 快捷函数：一次性对话
+    chat_stream,   # 快捷函数：流式对话
+)
+```
+
+### 快速开始：一次性对话
+
+```python
+import asyncio
+from mini_agent.server import chat
+
+async def main():
+    response = await chat("你好，请介绍一下你自己")
+    print(response)
+
+asyncio.run(main())
+```
+
+### 使用 MiniAgentClient 类
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    # 使用上下文管理器自动管理连接
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        # 发送消息，等待完整响应
+        response = await client.send_message("你好", stream=False)
+        print(f"回复: {response.content}")
+        print(f"思考: {response.thinking}")
+        print(f"停止原因: {response.stop_reason}")
+
+asyncio.run(main())
+```
+
+### 流式响应
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        # 使用回调处理流式事件
+        def on_thinking(content):
+            print(f"[思考] {content}")
+
+        def on_tool_call(tool_info):
+            print(f"[工具] {tool_info.tool_name}")
+
+        response = await client.send_message(
+            "请写一首诗",
+            stream=True,
+            on_thinking=on_thinking,
+            on_tool_call=on_tool_call,
+        )
+        print(f"完整回复: {response.content}")
+
+asyncio.run(main())
+```
+
+### 使用迭代器处理流式事件
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        # 使用迭代器处理流式事件
+        async for event in client.send_message_stream("讲一个故事"):
+            event_type = event.get("type")
+
+            if event_type == "thinking":
+                print(f"[思考] {event['content']}")
+
+            elif event_type == "message_chunk":
+                print(event["content"], end="", flush=True)
+
+            elif event_type == "tool_call":
+                print(f"\n[工具调用] {event['tool_name']}")
+
+            elif event_type == "tool_result":
+                status = "✓" if event["success"] else "✗"
+                print(f"\n[工具结果] {status}")
+
+            elif event_type == "completed":
+                print(f"\n[完成] {event['stop_reason']}")
+
+asyncio.run(main())
+```
+
+### 多轮对话
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        # 创建会话（自动创建，也可以显式调用）
+        await client.create_session()
+
+        # 第一轮
+        response1 = await client.send_message("我的名字是小明")
+        print(f"Agent: {response1.content}")
+
+        # 第二轮（同一个会话，Agent 会记住上下文）
+        response2 = await client.send_message("你还记得我的名字吗？")
+        print(f"Agent: {response2.content}")
+
+        # 关闭会话
+        await client.close_session()
+
+asyncio.run(main())
+```
+
+### 获取工具调用详情
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        response = await client.send_message("帮我创建一个 test.txt 文件", stream=False)
+
+        # 查看工具调用记录
+        for tool_call in response.tool_calls:
+            print(f"调用工具: {tool_call.tool_name}")
+            print(f"参数: {tool_call.arguments}")
+
+        # 查看工具执行结果
+        for result in response.tool_results:
+            print(f"结果: {result.success}")
+            print(f"内容: {result.content}")
+            if result.error:
+                print(f"错误: {result.error}")
+
+asyncio.run(main())
+```
+
+### 指定工作目录
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    # 方式 1：在构造函数中指定
+    async with MiniAgentClient(
+        url="ws://localhost:8765",
+        workspace="/path/to/workspace"
+    ) as client:
+        response = await client.send_message("列出当前目录的文件")
+        print(response.content)
+
+    # 方式 2：在创建会话时指定
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        await client.create_session(workspace="/tmp/my_project")
+        response = await client.send_message("创建一个 hello.py 文件")
+
+asyncio.run(main())
+```
+
+### 取消执行
+
+```python
+import asyncio
+from mini_agent.server import MiniAgentClient
+
+async def main():
+    async with MiniAgentClient("ws://localhost:8765") as client:
+        # 在另一个任务中发送消息
+        async def long_task():
+            return await client.send_message("执行一个耗时任务...")
+
+        task = asyncio.create_task(long_task())
+
+        # 3秒后取消
+        await asyncio.sleep(3)
+        await client.cancel()
+
+        try:
+            result = await task
+            print(f"结果: {result.stop_reason}")  # 应该是 "cancelled"
+        except Exception as e:
+            print(f"被取消: {e}")
+
+asyncio.run(main())
+```
+
+### AgentResponse 类
+
+```python
+@dataclass
+class AgentResponse:
+    content: str                           # Agent 回复内容
+    thinking: str | None                   # 思考过程
+    tool_calls: list[ToolCallInfo]         # 工具调用列表
+    tool_results: list[ToolResultInfo]     # 工具执行结果列表
+    stop_reason: str                       # 结束原因
+```
+
+### ToolCallInfo 类
+
+```python
+@dataclass
+class ToolCallInfo:
+    tool_name: str           # 工具名称
+    tool_call_id: str        # 调用 ID
+    arguments: dict[str, Any]  # 调用参数
+```
+
+### ToolResultInfo 类
+
+```python
+@dataclass
+class ToolResultInfo:
+    tool_call_id: str        # 对应的工具调用 ID
+    tool_name: str           # 工具名称
+    success: bool            # 是否成功
+    content: str             # 返回内容
+    error: str | None        # 错误信息（如果失败）
+```
+
+## 客户端示例（底层 WebSocket）
+
+以下示例直接使用 WebSocket 协议，适合需要更精细控制或使用其他语言的场景。
 
 ### Python 客户端（流式模式）
 

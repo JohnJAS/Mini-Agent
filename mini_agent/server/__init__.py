@@ -5,6 +5,14 @@ supporting multiple sessions with both streaming and complete response modes.
 """
 
 from .websocket_server import run_server, main
+from .client import (
+    MiniAgentClient,
+    AgentResponse,
+    ToolCallInfo,
+    ToolResultInfo,
+    chat,
+    chat_stream,
+)
 from .message_types import (
     # Request types
     CreateSessionRequest,
@@ -26,6 +34,13 @@ __all__ = [
     # Server
     "run_server",
     "main",
+    # Client
+    "MiniAgentClient",
+    "AgentResponse",
+    "ToolCallInfo",
+    "ToolResultInfo",
+    "chat",
+    "chat_stream",
     # Request types
     "CreateSessionRequest",
     "PromptRequest",
