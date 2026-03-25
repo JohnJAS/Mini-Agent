@@ -13,6 +13,7 @@ from .client import (
     chat,
     chat_stream,
 )
+from .exec_cli import execute_task, main as exec_main
 from .message_types import (
     # Request types
     CreateSessionRequest,
@@ -41,6 +42,9 @@ __all__ = [
     "ToolResultInfo",
     "chat",
     "chat_stream",
+    # Exec CLI
+    "execute_task",
+    "exec_main",
     # Request types
     "CreateSessionRequest",
     "PromptRequest",
