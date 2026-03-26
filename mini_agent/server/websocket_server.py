@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.server import serve, ServerConnection
+from websockets.exceptions import ConnectionClosed
 
 from mini_agent.cli import initialize_base_tools
 from mini_agent.config import Config
@@ -122,11 +123,18 @@ class MiniAgentWebSocketServer:
 
         # Session associated with this connection
         current_session: SessionState | None = None
+        disconnected_normally = False
 
         async def send_message(data: dict[str, Any]) -> None:
             """Send a message to the client."""
             try:
                 await websocket.send(json.dumps(data))
+            except ConnectionClosed as e:
+                # Normal close (1000) or going away (1001) should not be errors
+                if e.code in (1000, 1001):
+                    logger.debug(f"Connection closed normally while sending: {e}")
+                else:
+                    logger.warning(f"Connection closed unexpectedly while sending: {e}")
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
 
@@ -189,11 +197,20 @@ class MiniAgentWebSocketServer:
                         code="internal_error"
                     ).model_dump())
 
+        except ConnectionClosed as e:
+            # Normal close (1000) or going away (1001) are expected
+            disconnected_normally = True
+            if e.code in (1000, 1001):
+                logger.info(f"Client disconnected normally: {client_addr}")
+            else:
+                logger.warning(f"Connection closed unexpectedly: {client_addr}, code={e.code}, reason={e.reason}")
+
         except Exception as e:
             logger.exception(f"Connection error: {e}")
 
         finally:
-            logger.info(f"Client disconnected: {client_addr}")
+            if not disconnected_normally:
+                logger.info(f"Client disconnected: {client_addr}")
             # Clean up session if needed
             if current_session:
                 # Optionally keep session alive for reconnection

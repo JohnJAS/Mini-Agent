@@ -18,6 +18,17 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Fix Windows console encoding for UTF-8 support
+if sys.platform == "win32":
+    import os
+    # Set environment variables for UTF-8
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    # Reconfigure stdout/stderr for UTF-8
+    if sys.stdout.encoding != "utf-8":
+        sys.stdout.reconfigure(encoding="utf-8")
+    if sys.stderr.encoding != "utf-8":
+        sys.stderr.reconfigure(encoding="utf-8")
+
 from .client import MiniAgentClient, AgentResponse
 
 # Configure logging
