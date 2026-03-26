@@ -623,6 +623,106 @@ Client                          Server
 
 2. 配置文件包含有效的 API Key
 
+## 命令行客户端 (mini-agent-exec)
+
+`mini-agent-exec` 是一个命令行工具，用于连接到运行中的 WebSocket 服务器并执行任务。适合集成到脚本或其他工具中。
+
+### 基本用法
+
+```bash
+# 执行简单任务
+mini-agent-exec "创建一个 hello.txt 文件"
+
+# 指定工作目录
+mini-agent-exec --workspace /path/to/project "重构 main.py 文件"
+
+# 流式输出（实时显示）
+mini-agent-exec --stream "写一个 Python 脚本"
+
+# 详细模式（显示思考和工具调用）
+mini-agent-exec --verbose "你的任务"
+
+# 连接远程服务器
+mini-agent-exec --url ws://remote:8765 "你的任务"
+
+# 设置超时时间（默认 300 秒）
+mini-agent-exec --timeout 60 "快速任务"
+```
+
+### 命令行选项
+
+| 选项 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| `--url` | | WebSocket 服务器 URL | `ws://localhost:8765` |
+| `--workspace` | `-w` | 工作目录路径 | 配置文件中的设置 |
+| `--stream` | `-s` | 流式输出模式 | 否 |
+| `--verbose` | `-v` | 显示详细输出（思考、工具调用） | 否 |
+| `--timeout` | `-t` | 超时时间（秒） | `300` |
+
+### 使用示例
+
+#### 基本任务执行
+
+```bash
+# 先启动服务器（在另一个终端）
+mini-agent-server
+
+# 执行任务
+mini-agent-exec "列出当前目录的文件"
+```
+
+#### 流式输出模式
+
+```bash
+# 实时查看输出
+mini-agent-exec --stream "写一个冒泡排序算法并解释"
+```
+
+#### 详细模式
+
+```bash
+# 查看思考过程和工具调用
+mini-agent-exec --verbose --stream "帮我分析这个项目的结构"
+
+# 输出示例：
+# === Thinking ===
+# 用户想要分析项目结构，我需要...
+# === End Thinking ===
+#
+# [Tool] list_directory
+# [Result] ✓ list_directory
+# ...
+```
+
+#### 集成到脚本
+
+```bash
+#!/bin/bash
+# 自动化任务脚本
+
+# 启动服务器（后台运行）
+mini-agent-server &
+SERVER_PID=$!
+
+# 等待服务器启动
+sleep 2
+
+# 执行任务
+mini-agent-exec --workspace ./myproject "运行测试并生成报告"
+
+# 关闭服务器
+kill $SERVER_PID
+```
+
+### 返回值
+
+- `0` - 执行成功
+- `1` - 执行失败（连接错误、超时、任务错误等）
+
+```bash
+mini-agent-exec "任务" && echo "成功" || echo "失败"
+```
+
 ## 与 ACP 服务器的区别
 
 | 特性 | WebSocket Server | ACP Server |
@@ -644,4 +744,7 @@ mini-agent-acp
 
 # WebSocket 服务器（用于 API 调用）
 mini-agent-server
+
+# 命令行客户端（连接 WebSocket 服务器执行任务）
+mini-agent-exec "你的任务"
 ```
